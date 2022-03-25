@@ -1,10 +1,11 @@
-from flask import Flask,jsonify,request
+from flask import Flask,jsonify,request, Response
 import nltk
 from nltk.corpus import stopwords
 from nltk.cluster.util import cosine_distance
 import numpy as np
 import networkx as nx
 import re
+import tensorflow as tf
 from keras.models import load_model
 from keras.preprocessing.text import Tokenizer
 from keras.preprocessing.sequence import pad_sequences
@@ -13,6 +14,7 @@ from nltk.stem import WordNetLemmatizer
 sentence_length=685
 
 app = Flask(__name__)
+nltk.download('wordnet')
 
 with open('tokenizer.pkl','rb') as f:
 
@@ -24,111 +26,120 @@ predictor = load_model("network.h5")
 
 print("Model loaded")
 
-@app.route('/',methods=['GET'])
+@app.route('/')
 def home():
 
-    text=str(request.args['text'])
-    #nltk.download('stopwords')
-    text_list=text.split('.')
-    stop_words = stopwords.words('english')
-    if len(text_list)<=5:
+    return "This is a classifier API"
 
-        predict_class(text)
+@app.route('/classify/<string:text>',methods = ['GET'])
+def classify(text):
+     
+    if (request.method=='GET'):
+        #nltk.download('stopwords')
+        text_list=text.split('.')
+        stop_words = stopwords.words('english')
+        if len(text_list)<=5:
 
-    elif len(text_list)>5:
+            output_text=predict_class(text)
+            genre_dict={'Genre': output_text}
+            return jsonify(genre_dict)
 
-        summarize_text = []
-        decimal_nums=re.findall('\d{1}\d*\.\d{1}\d*',text)
-        list_of_words=text.split()
-        new_list_of_words=[]
-        for word in list_of_words:
+        elif len(text_list)>5:
 
-            if word in decimal_nums:
+            summarize_text = []
+            decimal_nums=re.findall('\d{1}\d*\.\d{1}\d*',text)
+            list_of_words=text.split()
+            new_list_of_words=[]
+            for word in list_of_words:
 
-                temp_number=re.sub('\.','\|',word)
-                new_list_of_words.append(temp_number)
+                if word in decimal_nums:
+
+                    temp_number=re.sub('\.','\|',word)
+                    new_list_of_words.append(temp_number)
+
+                else:
+
+                    new_list_of_words.append(word)
+
+            document=' '.join(new_list_of_words)       
+            sentences =  read_article(document)
+
+            sentence_similarity_martix = build_similarity_matrix(sentences, stop_words)
+
+            sentence_similarity_graph = nx.from_numpy_array(sentence_similarity_martix)
+            scores = nx.pagerank(sentence_similarity_graph)
+
+            ranked_sentence = sorted(((scores[i],s) for i,s in enumerate(sentences)), reverse=True)    
+            print(ranked_sentence)
+
+            if len(ranked_sentence)<=10:
+
+                top_n=5
 
             else:
 
-                new_list_of_words.append(word)
+                top_n=10
 
-        document=' '.join(new_list_of_words)       
-        sentences =  read_article(document)
+            for i in range(top_n):
+                    
+                summarize_text.append(" ".join(ranked_sentence[i][1]))
 
-        sentence_similarity_martix = build_similarity_matrix(sentences, stop_words)
+            final_summary=". ".join(summarize_text)
+            final_summary=final_summary.replace("\\|",'.')
+            output_text=predict_class(final_summary)
+            genre_dict={'Genre':output_text}
+            return jsonify(genre_dict)
 
-        sentence_similarity_graph = nx.from_numpy_array(sentence_similarity_martix)
-        scores = nx.pagerank(sentence_similarity_graph)
+        def read_article(ocr_text):
 
-        ranked_sentence = sorted(((scores[i],s) for i,s in enumerate(sentences)), reverse=True)    
-        print(ranked_sentence)
+            article = ocr_text.split(".")
+            sentences = []
 
-        if len(ranked_sentence)<=10:
-
-            top_n=5
-
-        else:
-
-            top_n=10
-
-        for i in range(top_n):
+            for sentence in article:
+                print(sentence)
+                sentences.append(sentence.replace("[^a-zA-Z]", " ").split(" "))
+            sentences.pop() 
                 
-            summarize_text.append(" ".join(ranked_sentence[i][1]))
+            return sentences
 
-        final_summary=". ".join(summarize_text)
-        final_summary=final_summary.replace("\\|",'.')
-        predict_class(final_summary)
+        def sentence_similarity(sent1, sent2, stopwords=None):
 
-    def read_article(ocr_text):
-
-        article = ocr_text.split(".")
-        sentences = []
-
-        for sentence in article:
-            print(sentence)
-            sentences.append(sentence.replace("[^a-zA-Z]", " ").split(" "))
-        sentences.pop() 
+            if stopwords is None:
+                stopwords = []
             
-        return sentences
-
-    def sentence_similarity(sent1, sent2, stopwords=None):
-
-        if stopwords is None:
-            stopwords = []
-        
-        sent1 = [w.lower() for w in sent1]
-        sent2 = [w.lower() for w in sent2]
-        
-        all_words = list(set(sent1 + sent2))
-        
-        vector1 = [0] * len(all_words)
-        vector2 = [0] * len(all_words)
-        
+            sent1 = [w.lower() for w in sent1]
+            sent2 = [w.lower() for w in sent2]
             
-        for w in sent1:
-            if w in stopwords:
-                continue
-            vector1[all_words.index(w)] += 1
-        
+            all_words = list(set(sent1 + sent2))
+            
+            vector1 = [0] * len(all_words)
+            vector2 = [0] * len(all_words)
+            
+                
+            for w in sent1:
+                if w in stopwords:
+                    continue
+                vector1[all_words.index(w)] += 1
+            
 
-        for w in sent2:
-            if w in stopwords:
-                continue
-            vector2[all_words.index(w)] += 1
-        
-        return 1 - cosine_distance(vector1, vector2)
+            for w in sent2:
+                if w in stopwords:
+                    continue
+                vector2[all_words.index(w)] += 1
+            
+            return 1 - cosine_distance(vector1, vector2)
 
-    def build_similarity_matrix(sentences, stop_words):
-        
-        similarity_matrix = np.zeros((len(sentences), len(sentences)))
-        
-        for idx1 in range(len(sentences)):
-            for idx2 in range(len(sentences)):
-                if idx1 == idx2: #ignore if both are same sentences
-                    continue 
-                similarity_matrix[idx1][idx2] =sentence_similarity(sentences[idx1], sentences[idx2], stop_words)
+        def build_similarity_matrix(sentences, stop_words):
+            
+            similarity_matrix = np.zeros((len(sentences), len(sentences)))
+            
+            for idx1 in range(len(sentences)):
+                for idx2 in range(len(sentences)):
+                    if idx1 == idx2: #ignore if both are same sentences
+                        continue 
+                    similarity_matrix[idx1][idx2] =sentence_similarity(sentences[idx1], sentences[idx2], stop_words)
 
-        return similarity_matrix
+            return similarity_matrix
 
 
 def predict_class(input_txt):
@@ -280,8 +291,14 @@ def predict_class(input_txt):
     x=re.sub('[^a-zA-Z]',' ',str(x))
     x=x.lower()
     x=x.split()
+
+    print("Reached Lem")
+
     lemmatizer = WordNetLemmatizer()
     x=[lemmatizer.lemmatize(word,"v") for word in x if not word in set(stopwords.words('english'))]
+    
+    print("Reached")
+
     x=' '.join(x)
     x=[x]
     x=tokens.texts_to_sequences(x)
@@ -314,10 +331,13 @@ def predict_class(input_txt):
     elif result==4:
         
         category="Sports"
+    
+    print(category)
+    return category
 
-    return jsonify({'Genre': category})
+if __name__=='__main__':
 
-
+    app.run(debug=True)
 
 
 
