@@ -315,7 +315,7 @@ def predict_class(input_txt):
         
         category="Sports"
 
-    return jsonify({'Summary': category})
+    return jsonify({'Genre': category})
 
 
 
